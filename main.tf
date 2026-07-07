@@ -674,7 +674,7 @@ data "aws_iam_policy_document" "s3_malware_protection_policy" {
 module "s3_malware_protection_role" {
   for_each = local.malware_protection_enabled
 
-  source  = "schubergphilis/mcaf-role/aws"
+  source  = "schubergphilis-ep/mcaf-role/aws"
   version = "~> 0.4"
 
   name                 = local.malware_iam_role_name
