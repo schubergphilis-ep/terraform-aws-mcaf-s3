@@ -62,16 +62,16 @@ variable "bucket_key_encryption_enforced" {
   description = "Enforces the default key encryption for all objects in the bucket"
 }
 
-variable "cors_rule" {
-  type = object({
+variable "cors_rules" {
+  type = list(object({
     allowed_headers = list(string)
     allowed_methods = list(string)
     allowed_origins = list(string)
     expose_headers  = list(string)
     max_age_seconds = number
-  })
-  default     = null
-  description = "The CORS rule for the S3 bucket"
+  }))
+  default     = []
+  description = "The CORS rules for the S3 bucket"
 }
 
 variable "eventbridge_enabled" {

@@ -2,6 +2,10 @@
 
 This document captures required refactoring on your part when upgrading to a module version that contains breaking changes.
 
+## Upgrading to v4.0.0
+
+- Cors rules have been updated to support multiple CORS rules. The `cors_rule` variable has been renamed to `cors_rules` and is now a list of objects instead of a single object. If you previously had a single CORS rule, you will need to wrap it in a list when upgrading.
+
 ## Upgrading to v3.0.0
 
 ### Key Changes
