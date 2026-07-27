@@ -7,6 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [4.0.0](https://github.com/schubergphilis-ep/terraform-aws-mcaf-s3/compare/v3.0.1...v4.0.0) (2026-07-27)
+
+
+### ⚠ BREAKING CHANGES
+
+* Support multiple CORS rules ([#4](https://github.com/schubergphilis-ep/terraform-aws-mcaf-s3/issues/4))
+
+### 🚀 Features
+
+* Support multiple CORS rules ([#4](https://github.com/schubergphilis-ep/terraform-aws-mcaf-s3/issues/4)) ([cf2ca70](https://github.com/schubergphilis-ep/terraform-aws-mcaf-s3/commit/cf2ca70c2baf9a99c113f93d0af4f4e2c1f1d015))
+
 ## [3.0.1](https://github.com/schubergphilis-ep/terraform-aws-mcaf-s3/compare/v3.0.0...v3.0.1) (2026-07-07)
 
 
