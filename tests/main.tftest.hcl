@@ -89,3 +89,39 @@ run "region" {
     error_message = "Expected S3 bucket request payment configuration region to be eu-west-1, got: ${aws_s3_bucket_request_payment_configuration.default.region}"
   }
 }
+
+# The Object Lock configuration enables Object Lock, so existing buckets can be locked too.
+run "object_lock" {
+  command = plan
+
+  module {
+    source = "./"
+  }
+
+  variables {
+    object_lock_mode = "GOVERNANCE"
+    object_lock_days = 1
+  }
+
+  assert {
+    condition     = aws_s3_bucket_object_lock_configuration.default["create"].object_lock_enabled == "Enabled"
+    error_message = "Expected the lock configuration to enable Object Lock, got: ${aws_s3_bucket_object_lock_configuration.default["create"].object_lock_enabled}"
+  }
+}
+
+# Object Lock works only with versioning enabled: fail at plan, not at apply.
+run "object_lock_without_versioning" {
+  command = plan
+
+  module {
+    source = "./"
+  }
+
+  variables {
+    versioning       = false
+    object_lock_mode = "GOVERNANCE"
+    object_lock_days = 1
+  }
+
+  expect_failures = [aws_s3_bucket_object_lock_configuration.default]
+}
