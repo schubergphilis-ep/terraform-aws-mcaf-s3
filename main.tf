@@ -26,12 +26,11 @@ data "aws_region" "default" {}
 ################################################################################
 
 resource "aws_s3_bucket" "default" {
-  region              = local.account_region
-  bucket              = var.name
-  bucket_prefix       = var.name_prefix
-  force_destroy       = var.force_destroy
-  object_lock_enabled = var.object_lock_mode != null ? true : false
-  tags                = var.tags
+  region        = local.account_region
+  bucket        = var.name
+  bucket_prefix = var.name_prefix
+  force_destroy = var.force_destroy
+  tags          = var.tags
 }
 
 data "aws_iam_policy_document" "ssl_policy" {
@@ -468,8 +467,9 @@ resource "aws_s3_bucket_logging" "default" {
 resource "aws_s3_bucket_object_lock_configuration" "default" {
   for_each = local.object_lock_enabled
 
-  region = local.account_region
-  bucket = aws_s3_bucket.default.bucket
+  region              = local.account_region
+  bucket              = aws_s3_bucket.default.bucket
+  object_lock_enabled = "Enabled"
 
   rule {
     default_retention {
@@ -479,7 +479,15 @@ resource "aws_s3_bucket_object_lock_configuration" "default" {
     }
   }
 
+  # Object Lock works only with versioning enabled:
+  # https://docs.aws.amazon.com/AmazonS3/latest/userguide/object-lock.html
+  depends_on = [aws_s3_bucket_versioning.default]
+
   lifecycle {
+    precondition {
+      condition     = var.versioning
+      error_message = "Object Lock needs versioning = true."
+    }
     precondition {
       condition     = var.object_lock_mode == null || length(var.logging_source_bucket_arns) == 0
       error_message = "You're trying to allow (other buckets) logging to this bucket and enable object locking on the same bucket! Object lock will prevent server access logs from written to the bucket. Either remove the logging source buckets configuration or remove the object lock configuration."
