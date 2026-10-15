@@ -32,7 +32,6 @@ resource "aws_s3_bucket" "default" {
   force_destroy = var.force_destroy
   tags          = var.tags
 
-  # No object_lock_enabled: the Object Lock configuration enables it, also on existing buckets
 }
 
 data "aws_iam_policy_document" "ssl_policy" {
