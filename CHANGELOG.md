@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [4.0.1](https://github.com/schubergphilis-ep/terraform-aws-mcaf-s3/compare/v4.0.0...v4.0.1) (2026-10-15)
+
+
+### 🐛 Fixes
+
+* enable Object Lock after versioning, also on existing buckets ([#6](https://github.com/schubergphilis-ep/terraform-aws-mcaf-s3/issues/6)) ([a39b1db](https://github.com/schubergphilis-ep/terraform-aws-mcaf-s3/commit/a39b1dbbbbc6610d29adb4fec387760f6ff45009))
+
 ## [4.0.0](https://github.com/schubergphilis-ep/terraform-aws-mcaf-s3/compare/v3.0.1...v4.0.0) (2026-07-27)
 
 
