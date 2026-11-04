@@ -255,8 +255,8 @@ run "replication_managed_role" {
   }
 
   assert {
-    condition     = length("${local.replication_iam_role_name}Role") <= 64
-    error_message = "Expected the replication role name to fit in 64 characters, got: ${local.replication_iam_role_name}Role"
+    condition     = length(module.s3_replication_role["create"].name) <= 64
+    error_message = "Expected the replication role name to fit in 64 characters, got: ${module.s3_replication_role["create"].name}"
   }
 
   assert {

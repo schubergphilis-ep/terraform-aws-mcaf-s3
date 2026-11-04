@@ -28,12 +28,8 @@ locals {
     }
   ) : {}
 
-  # mcaf-role appends "Role", so both names below end up at most 64 characters, the IAM limit.
-  replication_iam_role_name = (
-    length(aws_s3_bucket.default.id) <= 48
-    ? "${aws_s3_bucket.default.id}-replication"
-    : "${substr(aws_s3_bucket.default.id, 0, 39)}-${substr(md5(aws_s3_bucket.default.id), 0, 8)}-replication"
-  )
+  # IAM role names are at most 64 characters.
+  replication_iam_role_name = "${substr(aws_s3_bucket.default.id, 0, 52)}-replication"
 }
 
 data "aws_caller_identity" "default" {}
@@ -828,6 +824,7 @@ module "s3_replication_role" {
   assume_policy        = data.aws_iam_policy_document.s3_replication_assume_role["create"].json
   create_policy        = true
   permissions_boundary = var.replication_configuration.permissions_boundary
+  postfix              = false
   role_policy          = data.aws_iam_policy_document.s3_replication_policy["create"].json
   tags                 = var.tags
 }
