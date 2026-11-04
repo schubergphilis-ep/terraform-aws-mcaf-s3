@@ -33,7 +33,3 @@ module "cross_account_replication" {
     }
   }
 }
-
-output "replication_role_arn" {
-  value = module.cross_account_replication.replication_role_arn
-}
