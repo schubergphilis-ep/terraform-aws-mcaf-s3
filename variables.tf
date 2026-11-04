@@ -284,10 +284,10 @@ variable "region" {
 
 variable "replication_configuration" {
   type = object({
-    create_iam_role      = optional(bool, false)
-    create_kms_grant     = optional(bool, true)
-    iam_role_arn         = optional(string, null)
-    permissions_boundary = optional(string, null)
+    create_iam_role          = optional(bool, false)
+    create_kms_grant         = optional(bool, true)
+    iam_role_arn             = optional(string, null)
+    permissions_boundary_arn = optional(string, null)
     rules = map(object({
       id                        = string
       delete_marker_replication = optional(bool, false)

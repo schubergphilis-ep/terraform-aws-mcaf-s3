@@ -823,7 +823,7 @@ module "s3_replication_role" {
   name                 = local.replication_iam_role_name
   assume_policy        = data.aws_iam_policy_document.s3_replication_assume_role["create"].json
   create_policy        = true
-  permissions_boundary = var.replication_configuration.permissions_boundary
+  permissions_boundary = var.replication_configuration.permissions_boundary_arn
   postfix              = false
   role_policy          = data.aws_iam_policy_document.s3_replication_policy["create"].json
   tags                 = var.tags
