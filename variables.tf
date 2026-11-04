@@ -284,12 +284,20 @@ variable "region" {
 
 variable "replication_configuration" {
   type = object({
-    iam_role_arn = string
+    create_iam_role      = optional(bool, false)
+    create_kms_grant     = optional(bool, null)
+    iam_role_arn         = optional(string, null)
+    permissions_boundary = optional(string, null)
     rules = map(object({
-      id                  = string
-      dest_bucket         = string
-      dest_storage_class  = optional(string, null)
-      replica_kms_key_arn = optional(string, null)
+      id                        = string
+      delete_marker_replication = optional(bool, false)
+      dest_account_id           = optional(string, null)
+      dest_bucket               = string
+      dest_storage_class        = optional(string, null)
+      replica_kms_key_arn       = optional(string, null)
+      filter = optional(object({
+        prefix = optional(string)
+      }), null)
       metrics = optional(object({
         status                  = optional(bool, false)
         event_threshold_minutes = optional(number, 15)
@@ -305,7 +313,48 @@ variable "replication_configuration" {
     }))
   })
   default     = null
-  description = "Bucket replication configuration settings, specify the rules map keys as integers as these are used to determine the priority of the rules in case of conflict."
+  description = <<-EOT
+    Bucket replication configuration settings, specify the rules map keys as integers as these are used to determine the priority of the rules in case of conflict.
+
+    Either pass an existing role in `iam_role_arn`, or set `create_iam_role = true` to let the module create a least-privilege replication role (optionally with `permissions_boundary`).
+    When the module creates the role and the bucket uses `kms_key_arn`, it also creates a KMS grant so the role can decrypt the source objects. `create_kms_grant` defaults to creating the grant when `kms_key_arn` is set; set it to `true` when `kms_key_arn` is not known at plan time, or to `false` when the key policy already allows the role.
+
+    Per rule, `filter.prefix` limits replication to a prefix, `dest_account_id` replicates cross-account and makes the destination account owner of the replicas, and `delete_marker_replication` replicates delete markers.
+  EOT
+
+  validation {
+    condition = var.replication_configuration == null || (
+      var.replication_configuration.create_iam_role != (var.replication_configuration.iam_role_arn != null)
+    )
+    error_message = "Set either replication_configuration.iam_role_arn or replication_configuration.create_iam_role = true, not both."
+  }
+
+  validation {
+    condition = var.replication_configuration == null || (
+      try(var.replication_configuration.iam_role_arn, null) == null ||
+      can(regex("^arn:aws[a-z-]*:iam::[0-9]{12}:role/", var.replication_configuration.iam_role_arn))
+    )
+    error_message = "replication_configuration.iam_role_arn must be an IAM role ARN."
+  }
+
+  validation {
+    condition = var.replication_configuration == null || (
+      try(var.replication_configuration.permissions_boundary, null) == null ||
+      can(regex("^arn:aws[a-z-]*:iam::([0-9]{12}|aws):policy/", var.replication_configuration.permissions_boundary))
+    )
+    error_message = "replication_configuration.permissions_boundary must be an IAM policy ARN."
+  }
+
+  validation {
+    condition = var.replication_configuration == null || alltrue([
+      for rule in try(var.replication_configuration.rules, {}) : (
+        can(regex("^arn:aws[a-z-]*:s3:::[^/]+$", rule.dest_bucket)) &&
+        (rule.dest_account_id == null || can(regex("^[0-9]{12}$", rule.dest_account_id))) &&
+        (rule.replica_kms_key_arn == null || can(regex("^arn:aws[a-z-]*:kms:", rule.replica_kms_key_arn)))
+      )
+    ])
+    error_message = "Every replication rule needs dest_bucket as an S3 bucket ARN, dest_account_id as a 12-digit account ID and replica_kms_key_arn as a KMS ARN, when set."
+  }
 }
 
 variable "request_payer" {

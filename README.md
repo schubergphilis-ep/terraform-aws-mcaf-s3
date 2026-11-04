@@ -34,6 +34,39 @@ Or partitioned prefix, which uses the following format for the log file with par
     }
 ```
 
+## Replication
+
+Set `replication_configuration` to replicate objects to other buckets. Either pass an existing role in `iam_role_arn`, or set `create_iam_role = true` to let the module create a least-privilege role for the destinations in the rules (its ARN is in the `replication_role_arn` output).
+
+When the module creates the role and the bucket is encrypted with `kms_key_arn`, it also creates a KMS grant so the role can decrypt the source objects, because a role policy alone is not enough when the key policy only trusts the account root. Set `create_kms_grant = true` when `kms_key_arn` is not known at plan time, or `false` when the key policy already allows the role.
+
+Replicating a prefix to a bucket in another account:
+
+```hcl
+  replication_configuration = {
+    create_iam_role = true
+
+    rules = {
+      "1" = {
+        id                  = "reports"
+        dest_account_id     = "222222222222"
+        dest_bucket         = "arn:aws:s3:::datalake-bucket"
+        replica_kms_key_arn = "arn:aws:kms:eu-west-1:222222222222:key/1234abcd-12ab-34cd-56ef-1234567890ab"
+
+        filter = {
+          prefix = "reports/daily/"
+        }
+
+        source_selection_criteria = {
+          sse_kms_encrypted_objects = true
+        }
+      }
+    }
+  }
+```
+
+With `dest_account_id` set, the destination account becomes the owner of the replicas. The destination bucket policy and replica KMS key policy in that account still have to allow the replication role.
+
 <!-- BEGIN_TF_DOCS -->
 ## Requirements
 
@@ -53,12 +86,14 @@ Or partitioned prefix, which uses the following format for the log file with par
 | Name | Source | Version |
 |------|--------|---------|
 | <a name="module_s3_malware_protection_role"></a> [s3\_malware\_protection\_role](#module\_s3\_malware\_protection\_role) | schubergphilis-ep/mcaf-role/aws | ~> 0.4 |
+| <a name="module_s3_replication_role"></a> [s3\_replication\_role](#module\_s3\_replication\_role) | schubergphilis-ep/mcaf-role/aws | ~> 0.4 |
 
 ## Resources
 
 | Name | Type |
 |------|------|
 | [aws_guardduty_malware_protection_plan.default](https://registry.terraform.io/providers/hashicorp/aws/latest/docs/resources/guardduty_malware_protection_plan) | resource |
+| [aws_kms_grant.s3_replication](https://registry.terraform.io/providers/hashicorp/aws/latest/docs/resources/kms_grant) | resource |
 | [aws_s3_bucket.default](https://registry.terraform.io/providers/hashicorp/aws/latest/docs/resources/s3_bucket) | resource |
 | [aws_s3_bucket_acl.default](https://registry.terraform.io/providers/hashicorp/aws/latest/docs/resources/s3_bucket_acl) | resource |
 | [aws_s3_bucket_cors_configuration.default](https://registry.terraform.io/providers/hashicorp/aws/latest/docs/resources/s3_bucket_cors_configuration) | resource |
@@ -81,6 +116,8 @@ Or partitioned prefix, which uses the following format for the log file with par
 | [aws_iam_policy_document.malware_protection_policy](https://registry.terraform.io/providers/hashicorp/aws/latest/docs/data-sources/iam_policy_document) | data source |
 | [aws_iam_policy_document.s3_malware_protection_assume_role](https://registry.terraform.io/providers/hashicorp/aws/latest/docs/data-sources/iam_policy_document) | data source |
 | [aws_iam_policy_document.s3_malware_protection_policy](https://registry.terraform.io/providers/hashicorp/aws/latest/docs/data-sources/iam_policy_document) | data source |
+| [aws_iam_policy_document.s3_replication_assume_role](https://registry.terraform.io/providers/hashicorp/aws/latest/docs/data-sources/iam_policy_document) | data source |
+| [aws_iam_policy_document.s3_replication_policy](https://registry.terraform.io/providers/hashicorp/aws/latest/docs/data-sources/iam_policy_document) | data source |
 | [aws_iam_policy_document.ssl_policy](https://registry.terraform.io/providers/hashicorp/aws/latest/docs/data-sources/iam_policy_document) | data source |
 | [aws_region.default](https://registry.terraform.io/providers/hashicorp/aws/latest/docs/data-sources/region) | data source |
 
@@ -112,7 +149,7 @@ Or partitioned prefix, which uses the following format for the log file with par
 | <a name="input_object_ownership_type"></a> [object\_ownership\_type](#input\_object\_ownership\_type) | The object ownership type for the objects in S3 Bucket, defaults to BucketOwnerEnforced. | `string` | `"BucketOwnerEnforced"` | no |
 | <a name="input_policy"></a> [policy](#input\_policy) | A valid bucket policy JSON document. | `string` | `null` | no |
 | <a name="input_region"></a> [region](#input\_region) | The AWS region where the bucket will be created. If omitted, the default provider region is used. | `string` | `null` | no |
-| <a name="input_replication_configuration"></a> [replication\_configuration](#input\_replication\_configuration) | Bucket replication configuration settings, specify the rules map keys as integers as these are used to determine the priority of the rules in case of conflict. | <pre>object({<br/>    iam_role_arn = string<br/>    rules = map(object({<br/>      id                  = string<br/>      dest_bucket         = string<br/>      dest_storage_class  = optional(string, null)<br/>      replica_kms_key_arn = optional(string, null)<br/>      metrics = optional(object({<br/>        status                  = optional(bool, false)<br/>        event_threshold_minutes = optional(number, 15)<br/>      }))<br/>      replication_time = optional(object({<br/>        status       = optional(bool, false)<br/>        time_minutes = optional(number, 15)<br/>      }))<br/>      source_selection_criteria = optional(object({<br/>        replica_modifications     = optional(bool, false)<br/>        sse_kms_encrypted_objects = optional(bool, false)<br/>      }))<br/>    }))<br/>  })</pre> | `null` | no |
+| <a name="input_replication_configuration"></a> [replication\_configuration](#input\_replication\_configuration) | Bucket replication configuration settings, specify the rules map keys as integers as these are used to determine the priority of the rules in case of conflict.<br/><br/>Either pass an existing role in `iam_role_arn`, or set `create_iam_role = true` to let the module create a least-privilege replication role (optionally with `permissions_boundary`).<br/>When the module creates the role and the bucket uses `kms_key_arn`, it also creates a KMS grant so the role can decrypt the source objects. `create_kms_grant` defaults to creating the grant when `kms_key_arn` is set; set it to `true` when `kms_key_arn` is not known at plan time, or to `false` when the key policy already allows the role.<br/><br/>Per rule, `filter.prefix` limits replication to a prefix, `dest_account_id` replicates cross-account and makes the destination account owner of the replicas, and `delete_marker_replication` replicates delete markers. | <pre>object({<br/>    create_iam_role      = optional(bool, false)<br/>    create_kms_grant     = optional(bool, null)<br/>    iam_role_arn         = optional(string, null)<br/>    permissions_boundary = optional(string, null)<br/>    rules = map(object({<br/>      id                        = string<br/>      delete_marker_replication = optional(bool, false)<br/>      dest_account_id           = optional(string, null)<br/>      dest_bucket               = string<br/>      dest_storage_class        = optional(string, null)<br/>      replica_kms_key_arn       = optional(string, null)<br/>      filter = optional(object({<br/>        prefix = optional(string)<br/>      }), null)<br/>      metrics = optional(object({<br/>        status                  = optional(bool, false)<br/>        event_threshold_minutes = optional(number, 15)<br/>      }))<br/>      replication_time = optional(object({<br/>        status       = optional(bool, false)<br/>        time_minutes = optional(number, 15)<br/>      }))<br/>      source_selection_criteria = optional(object({<br/>        replica_modifications     = optional(bool, false)<br/>        sse_kms_encrypted_objects = optional(bool, false)<br/>      }))<br/>    }))<br/>  })</pre> | `null` | no |
 | <a name="input_request_payer"></a> [request\_payer](#input\_request\_payer) | The request payer for the bucket, defaults to BucketOwner. Valid values: BucketOwner, Requester. | `string` | `"BucketOwner"` | no |
 | <a name="input_restrict_public_buckets"></a> [restrict\_public\_buckets](#input\_restrict\_public\_buckets) | Whether Amazon S3 should restrict public bucket policies for this bucket. | `bool` | `true` | no |
 | <a name="input_tags"></a> [tags](#input\_tags) | A mapping of tags to assign to the bucket. | `map(string)` | `{}` | no |
@@ -126,6 +163,7 @@ Or partitioned prefix, which uses the following format for the log file with par
 | <a name="output_arn"></a> [arn](#output\_arn) | ARN of the bucket |
 | <a name="output_id"></a> [id](#output\_id) | Name of the bucket |
 | <a name="output_name"></a> [name](#output\_name) | Name of the bucket |
+| <a name="output_replication_role_arn"></a> [replication\_role\_arn](#output\_replication\_role\_arn) | ARN of the IAM role used for replication: the role created by the module, the role passed in `replication_configuration.iam_role_arn`, or null without replication |
 <!-- END_TF_DOCS -->
 
 ## Licensing

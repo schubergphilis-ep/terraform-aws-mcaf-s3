@@ -15,6 +15,23 @@ locals {
   malware_protection_enabled               = var.malware_protection.enabled ? { create = true } : {}
   object_lock_enabled                      = var.object_lock_mode != null ? { create = true } : {}
   replication_configuration_enabled        = var.replication_configuration != null ? { create = true } : {}
+  replication_role_enabled                 = try(var.replication_configuration.create_iam_role, false) ? { create = true } : {}
+
+  # Only look at kms_key_arn when create_kms_grant is not set, so an explicit value also works with a key ARN that is
+  # unknown at plan time.
+  replication_create_kms_grant = try(var.replication_configuration.create_kms_grant, null)
+  replication_kms_grant_enabled = (
+    length(local.replication_role_enabled) == 0 ? false :
+    local.replication_create_kms_grant != null ? local.replication_create_kms_grant : var.kms_key_arn != null
+  ) ? { create = true } : {}
+
+  replication_replica_kms_key_arns = distinct(compact([for rule in try(var.replication_configuration.rules, {}) : rule.replica_kms_key_arn]))
+
+  replication_iam_role_name = (
+    length(aws_s3_bucket.default.id) <= 48
+    ? "${aws_s3_bucket.default.id}-replication"
+    : "${substr(aws_s3_bucket.default.id, 0, 39)}-${substr(md5(aws_s3_bucket.default.id), 0, 8)}-replication"
+  )
 }
 
 data "aws_caller_identity" "default" {}
@@ -713,11 +730,128 @@ resource "aws_s3_bucket_notification" "eventbridge" {
 # Replication
 ###
 
+data "aws_iam_policy_document" "s3_replication_assume_role" {
+  for_each = local.replication_role_enabled
+
+  statement {
+    actions = ["sts:AssumeRole"]
+
+    principals {
+      type        = "Service"
+      identifiers = ["s3.amazonaws.com"]
+    }
+  }
+}
+
+data "aws_iam_policy_document" "s3_replication_policy" {
+  for_each = local.replication_role_enabled
+
+  statement {
+    sid    = "AllowReadReplicationConfiguration"
+    effect = "Allow"
+    actions = [
+      "s3:GetReplicationConfiguration",
+      "s3:ListBucket"
+    ]
+    resources = [
+      aws_s3_bucket.default.arn
+    ]
+  }
+
+  statement {
+    sid    = "AllowReadSourceObjects"
+    effect = "Allow"
+    actions = [
+      "s3:GetObjectVersionAcl",
+      "s3:GetObjectVersionForReplication",
+      "s3:GetObjectVersionTagging"
+    ]
+    resources = [
+      "${aws_s3_bucket.default.arn}/*"
+    ]
+  }
+
+  statement {
+    sid    = "AllowReplicateToDestination"
+    effect = "Allow"
+    actions = [
+      "s3:ObjectOwnerOverrideToBucketOwner",
+      "s3:ReplicateDelete",
+      "s3:ReplicateObject",
+      "s3:ReplicateTags"
+    ]
+    resources = distinct([for rule in var.replication_configuration.rules : "${rule.dest_bucket}/*"])
+  }
+
+  dynamic "statement" {
+    for_each = var.kms_key_arn != null ? { create = true } : {}
+
+    content {
+      sid       = "AllowDecryptSourceObjects"
+      effect    = "Allow"
+      actions   = ["kms:Decrypt"]
+      resources = [var.kms_key_arn]
+      condition {
+        test     = "StringEquals"
+        variable = "kms:ViaService"
+        values   = ["s3.${local.account_region}.amazonaws.com"]
+      }
+    }
+  }
+
+  dynamic "statement" {
+    for_each = length(local.replication_replica_kms_key_arns) > 0 ? { create = true } : {}
+
+    content {
+      sid    = "AllowEncryptReplicas"
+      effect = "Allow"
+      actions = [
+        "kms:Encrypt",
+        "kms:GenerateDataKey"
+      ]
+      resources = local.replication_replica_kms_key_arns
+    }
+  }
+}
+
+module "s3_replication_role" {
+  for_each = local.replication_role_enabled
+
+  source  = "schubergphilis-ep/mcaf-role/aws"
+  version = "~> 0.4"
+
+  name                 = local.replication_iam_role_name
+  assume_policy        = data.aws_iam_policy_document.s3_replication_assume_role["create"].json
+  create_policy        = true
+  permissions_boundary = var.replication_configuration.permissions_boundary
+  role_policy          = data.aws_iam_policy_document.s3_replication_policy["create"].json
+  tags                 = var.tags
+}
+
+# Key policies of mcaf-kms keys only trust the account root, so the role policy alone can't give the role access to
+# the bucket key. A grant does, without a dependency cycle between the role and the key policy.
+resource "aws_kms_grant" "s3_replication" {
+  for_each = local.replication_kms_grant_enabled
+
+  region            = local.account_region
+  name              = local.replication_iam_role_name
+  key_id            = var.kms_key_arn
+  grantee_principal = module.s3_replication_role["create"].arn
+  operations        = contains(local.replication_replica_kms_key_arns, var.kms_key_arn) ? ["Decrypt", "Encrypt", "GenerateDataKey"] : ["Decrypt"]
+
+  lifecycle {
+    precondition {
+      condition     = var.kms_key_arn != null
+      error_message = "replication_configuration.create_kms_grant needs kms_key_arn to be set."
+    }
+  }
+}
+
 resource "aws_s3_bucket_replication_configuration" "default" {
   for_each = local.replication_configuration_enabled
 
   region = local.account_region
-  role   = var.replication_configuration.iam_role_arn
+  role   = length(local.replication_role_enabled) > 0 ? module.s3_replication_role["create"].arn : var.replication_configuration.iam_role_arn
   bucket = aws_s3_bucket.default.id
 
   dynamic "rule" {
@@ -729,12 +863,21 @@ resource "aws_s3_bucket_replication_configuration" "default" {
       status   = "Enabled"
 
       delete_marker_replication {
-        status = "Disabled"
+        status = rule.value.delete_marker_replication ? "Enabled" : "Disabled"
       }
 
       destination {
+        account       = rule.value.dest_account_id
         bucket        = rule.value["dest_bucket"]
         storage_class = rule.value["dest_storage_class"]
+
+        dynamic "access_control_translation" {
+          for_each = rule.value.dest_account_id != null ? { create = true } : {}
+
+          content {
+            owner = "Destination"
+          }
+        }
 
         dynamic "encryption_configuration" {
           for_each = rule.value.replica_kms_key_arn != null ? { create = true } : {}
@@ -782,11 +925,14 @@ resource "aws_s3_bucket_replication_configuration" "default" {
         }
       }
 
-      filter {}
+      filter {
+        prefix = try(rule.value.filter.prefix, null)
+      }
     }
   }
 
-  depends_on = [aws_s3_bucket_versioning.default]
+  # The role needs its KMS grant before S3 replicates the first object.
+  depends_on = [aws_kms_grant.s3_replication, aws_s3_bucket_versioning.default]
 }
 
 ###
