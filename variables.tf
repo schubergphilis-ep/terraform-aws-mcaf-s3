@@ -285,7 +285,7 @@ variable "region" {
 variable "replication_configuration" {
   type = object({
     create_iam_role      = optional(bool, false)
-    create_kms_grant     = optional(bool, null)
+    create_kms_grant     = optional(bool, true)
     iam_role_arn         = optional(string, null)
     permissions_boundary = optional(string, null)
     rules = map(object({
@@ -317,7 +317,7 @@ variable "replication_configuration" {
     Bucket replication configuration settings, specify the rules map keys as integers as these are used to determine the priority of the rules in case of conflict.
 
     Either pass an existing role in `iam_role_arn`, or set `create_iam_role = true` to let the module create a least-privilege replication role (optionally with `permissions_boundary`).
-    When the module creates the role and the bucket uses `kms_key_arn`, it also creates a KMS grant so the role can decrypt the source objects. `create_kms_grant` defaults to creating the grant when `kms_key_arn` is set; set it to `true` when `kms_key_arn` is not known at plan time, or to `false` when the key policy already allows the role.
+    When the module creates the role, it also creates KMS grants (`create_kms_grant`, default `true`): one for `kms_key_arn` so the role can decrypt the source objects, and one per rule that encrypts replicas with a `replica_kms_key_arn` in this account (rules without `dest_account_id`). Set `create_kms_grant = false` when the bucket has no `kms_key_arn`, or when the key policies already allow the role. For a cross-account `replica_kms_key_arn`, the key policy in the destination account has to allow the role.
 
     Per rule, `filter.prefix` limits replication to a prefix, `dest_account_id` replicates cross-account and makes the destination account owner of the replicas, and `delete_marker_replication` replicates delete markers.
   EOT

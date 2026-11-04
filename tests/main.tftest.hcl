@@ -265,6 +265,11 @@ run "replication_managed_role" {
   }
 
   assert {
+    condition     = length(aws_kms_grant.s3_replication_replica) == 0
+    error_message = "Expected no KMS grant for a replica key in another account"
+  }
+
+  assert {
     condition = (
       aws_s3_bucket_replication_configuration.default["create"].rule[0].delete_marker_replication[0].status == "Enabled" &&
       aws_s3_bucket_replication_configuration.default["create"].rule[0].destination[0].account == "222222222222" &&
@@ -314,7 +319,8 @@ run "replication_managed_role_without_kms_key" {
 
   variables {
     replication_configuration = {
-      create_iam_role = true
+      create_iam_role  = true
+      create_kms_grant = false
 
       rules = {
         "1" = {
@@ -328,6 +334,73 @@ run "replication_managed_role_without_kms_key" {
   assert {
     condition     = length(module.s3_replication_role) == 1 && length(aws_kms_grant.s3_replication) == 0
     error_message = "Expected a replication role without KMS grant"
+  }
+}
+
+# The grant is on by default, so a bucket without a KMS key has to turn it off.
+run "replication_managed_role_without_kms_key_needs_grant_disabled" {
+  command = plan
+
+  module {
+    source = "./"
+  }
+
+  variables {
+    replication_configuration = {
+      create_iam_role = true
+
+      rules = {
+        "1" = {
+          id          = "1"
+          dest_bucket = "arn:aws:s3:::destination-bucket"
+        }
+      }
+    }
+  }
+
+  expect_failures = [aws_kms_grant.s3_replication]
+}
+
+# Replicas encrypted with a key in this account get their own grant, in the region of that key.
+run "replication_same_account_replica_key" {
+  command = plan
+
+  module {
+    source = "./"
+  }
+
+  variables {
+    kms_key_arn = "arn:aws:kms:eu-central-1:111111111111:key/1234abcd-12ab-34cd-56ef-1234567890ab"
+
+    replication_configuration = {
+      create_iam_role = true
+
+      rules = {
+        "1" = {
+          id                  = "1"
+          dest_bucket         = "arn:aws:s3:::destination-bucket"
+          replica_kms_key_arn = "arn:aws:kms:eu-west-1:111111111111:key/0b6d5b2e-7f3c-4f53-9a8e-3c1f8f0c1d2e"
+        }
+      }
+    }
+  }
+
+  assert {
+    condition = (
+      length(aws_kms_grant.s3_replication_replica) == 1 &&
+      aws_kms_grant.s3_replication_replica["1"].region == "eu-west-1" &&
+      aws_kms_grant.s3_replication_replica["1"].operations == toset(["Encrypt", "GenerateDataKey"])
+    )
+    error_message = "Expected a KMS grant for Encrypt and GenerateDataKey on the replica key in eu-west-1"
+  }
+}
+
+# A KMS key created in the same configuration is unknown during plan, which must not block the grant.
+run "replication_unknown_kms_key" {
+  command = plan
+
+  module {
+    source = "./tests/kms-key-unknown"
   }
 }
 
