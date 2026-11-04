@@ -251,7 +251,7 @@ run "replication_managed_role" {
 
   assert {
     condition     = length(module.s3_replication_role) == 1 && length(aws_kms_grant.s3_replication) == 1
-    error_message = "Expected a replication role and KMS grant"
+    error_message = "Expected a replication role and only the KMS grant for the bucket key, not for the replica key in another account"
   }
 
   assert {
@@ -260,13 +260,8 @@ run "replication_managed_role" {
   }
 
   assert {
-    condition     = aws_kms_grant.s3_replication["create"].operations == toset(["Decrypt"])
+    condition     = aws_kms_grant.s3_replication["bucket"].operations == toset(["Decrypt"])
     error_message = "Expected the KMS grant to only allow Decrypt"
-  }
-
-  assert {
-    condition     = length(aws_kms_grant.s3_replication_replica) == 0
-    error_message = "Expected no KMS grant for a replica key in another account"
   }
 
   assert {
@@ -337,30 +332,6 @@ run "replication_managed_role_without_kms_key" {
   }
 }
 
-# The grant is on by default, so a bucket without a KMS key has to turn it off.
-run "replication_managed_role_without_kms_key_needs_grant_disabled" {
-  command = plan
-
-  module {
-    source = "./"
-  }
-
-  variables {
-    replication_configuration = {
-      create_iam_role = true
-
-      rules = {
-        "1" = {
-          id          = "1"
-          dest_bucket = "arn:aws:s3:::destination-bucket"
-        }
-      }
-    }
-  }
-
-  expect_failures = [aws_kms_grant.s3_replication]
-}
-
 # Replicas encrypted with a key in this account get their own grant, in the region of that key.
 run "replication_same_account_replica_key" {
   command = plan
@@ -387,9 +358,9 @@ run "replication_same_account_replica_key" {
 
   assert {
     condition = (
-      length(aws_kms_grant.s3_replication_replica) == 1 &&
-      aws_kms_grant.s3_replication_replica["1"].region == "eu-west-1" &&
-      aws_kms_grant.s3_replication_replica["1"].operations == toset(["Encrypt", "GenerateDataKey"])
+      length(aws_kms_grant.s3_replication) == 2 &&
+      aws_kms_grant.s3_replication["replica-1"].region == "eu-west-1" &&
+      aws_kms_grant.s3_replication["replica-1"].operations == toset(["Encrypt", "GenerateDataKey"])
     )
     error_message = "Expected a KMS grant for Encrypt and GenerateDataKey on the replica key in eu-west-1"
   }

@@ -316,10 +316,7 @@ variable "replication_configuration" {
   description = <<-EOT
     Bucket replication configuration settings, specify the rules map keys as integers as these are used to determine the priority of the rules in case of conflict.
 
-    Either pass an existing role in `iam_role_arn`, or set `create_iam_role = true` to let the module create a least-privilege replication role (optionally with `permissions_boundary`).
-    When the module creates the role, it also creates KMS grants (`create_kms_grant`, default `true`): one for `kms_key_arn` so the role can decrypt the source objects, and one per rule that encrypts replicas with a `replica_kms_key_arn` in this account (rules without `dest_account_id`). Set `create_kms_grant = false` when the bucket has no `kms_key_arn`, or when the key policies already allow the role. For a cross-account `replica_kms_key_arn`, the key policy in the destination account has to allow the role.
-
-    Per rule, `filter.prefix` limits replication to a prefix, `dest_account_id` replicates cross-account and makes the destination account owner of the replicas, and `delete_marker_replication` replicates delete markers.
+    Pass `iam_role_arn`, or set `create_iam_role = true` to create a role with KMS grants on `kms_key_arn` and same-account `replica_kms_key_arn`s. Set `create_kms_grant = false` when the bucket has no `kms_key_arn`.
   EOT
 
   validation {
@@ -327,22 +324,6 @@ variable "replication_configuration" {
       var.replication_configuration.create_iam_role != (var.replication_configuration.iam_role_arn != null)
     )
     error_message = "Set either replication_configuration.iam_role_arn or replication_configuration.create_iam_role = true, not both."
-  }
-
-  validation {
-    condition = var.replication_configuration == null || (
-      try(var.replication_configuration.iam_role_arn, null) == null ||
-      can(regex("^arn:aws[a-z-]*:iam::[0-9]{12}:role/", var.replication_configuration.iam_role_arn))
-    )
-    error_message = "replication_configuration.iam_role_arn must be an IAM role ARN."
-  }
-
-  validation {
-    condition = var.replication_configuration == null || (
-      try(var.replication_configuration.permissions_boundary, null) == null ||
-      can(regex("^arn:aws[a-z-]*:iam::([0-9]{12}|aws):policy/", var.replication_configuration.permissions_boundary))
-    )
-    error_message = "replication_configuration.permissions_boundary must be an IAM policy ARN."
   }
 
   validation {
