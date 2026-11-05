@@ -444,3 +444,86 @@ run "replication_invalid_account_id" {
 
   expect_failures = [var.replication_configuration]
 }
+
+# A given role name is used as is, and metrics only get an event threshold with Replication Time Control.
+run "replication_managed_role_name_and_metrics" {
+  command = plan
+
+  module {
+    source = "./"
+  }
+
+  variables {
+    replication_configuration = {
+      create_iam_role  = true
+      create_kms_grant = false
+      iam_role_name    = "acme-vpc-flow-logs-s3-replication"
+      iam_role_path    = "/mdr/"
+
+      rules = {
+        "1" = {
+          id          = "without-threshold"
+          dest_bucket = "arn:aws:s3:::destination-bucket"
+
+          metrics = {
+            status = true
+          }
+        }
+        "2" = {
+          id          = "with-threshold"
+          dest_bucket = "arn:aws:s3:::other-destination-bucket"
+
+          metrics = {
+            status = true
+          }
+
+          replication_time = {
+            status = true
+          }
+        }
+      }
+    }
+  }
+
+  assert {
+    condition     = module.s3_replication_role["create"].name == "acme-vpc-flow-logs-s3-replication"
+    error_message = "Expected the given role name without postfix, got: ${module.s3_replication_role["create"].name}"
+  }
+
+  assert {
+    condition = (
+      length(aws_s3_bucket_replication_configuration.default["create"].rule[0].destination[0].metrics[0].event_threshold) == 0 &&
+      aws_s3_bucket_replication_configuration.default["create"].rule[1].destination[0].metrics[0].event_threshold[0].minutes == 15 &&
+      aws_s3_bucket_replication_configuration.default["create"].rule[1].destination[0].replication_time[0].time[0].minutes == 15
+    )
+    error_message = "Expected no event threshold without Replication Time Control, and 15 minutes with it"
+  }
+}
+
+
+run "replication_time_without_metrics" {
+  command = plan
+
+  module {
+    source = "./"
+  }
+
+  variables {
+    replication_configuration = {
+      iam_role_arn = "arn:aws:iam::111111111111:role/replication-role"
+
+      rules = {
+        "1" = {
+          id          = "1"
+          dest_bucket = "arn:aws:s3:::destination-bucket"
+
+          replication_time = {
+            status = true
+          }
+        }
+      }
+    }
+  }
+
+  expect_failures = [var.replication_configuration]
+}

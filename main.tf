@@ -29,7 +29,7 @@ locals {
   ) : {}
 
   # IAM role names are at most 64 characters.
-  replication_iam_role_name = "${substr(aws_s3_bucket.default.id, 0, 52)}-replication"
+  replication_iam_role_name = coalesce(try(var.replication_configuration.iam_role_name, null), "${substr(aws_s3_bucket.default.id, 0, 52)}-replication")
 }
 
 data "aws_caller_identity" "default" {}
@@ -823,6 +823,7 @@ module "s3_replication_role" {
   name                 = local.replication_iam_role_name
   assume_policy        = data.aws_iam_policy_document.s3_replication_assume_role["create"].json
   create_policy        = true
+  path                 = var.replication_configuration.iam_role_path
   permissions_boundary = var.replication_configuration.permissions_boundary_arn
   postfix              = false
   role_policy          = data.aws_iam_policy_document.s3_replication_policy["create"].json
@@ -887,8 +888,13 @@ resource "aws_s3_bucket_replication_configuration" "default" {
           content {
             status = rule.value.metrics.status ? "Enabled" : "Disabled"
 
-            event_threshold {
-              minutes = rule.value.metrics.event_threshold_minutes
+            # The event threshold only applies to Replication Time Control. 15 minutes is the only value AWS supports.
+            dynamic "event_threshold" {
+              for_each = try(rule.value.replication_time.status, false) ? { create = true } : {}
+
+              content {
+                minutes = 15
+              }
             }
           }
         }
@@ -900,7 +906,7 @@ resource "aws_s3_bucket_replication_configuration" "default" {
             status = rule.value.replication_time.status ? "Enabled" : "Disabled"
 
             time {
-              minutes = rule.value.replication_time.time_minutes
+              minutes = 15
             }
           }
         }

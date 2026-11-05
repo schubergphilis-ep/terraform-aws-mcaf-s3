@@ -287,6 +287,8 @@ variable "replication_configuration" {
     create_iam_role          = optional(bool, false)
     create_kms_grant         = optional(bool, true)
     iam_role_arn             = optional(string, null)
+    iam_role_name            = optional(string, null)
+    iam_role_path            = optional(string, "/")
     permissions_boundary_arn = optional(string, null)
     rules = map(object({
       id                        = string
@@ -299,12 +301,10 @@ variable "replication_configuration" {
         prefix = optional(string)
       }), null)
       metrics = optional(object({
-        status                  = optional(bool, false)
-        event_threshold_minutes = optional(number, 15)
+        status = optional(bool, false)
       }))
       replication_time = optional(object({
-        status       = optional(bool, false)
-        time_minutes = optional(number, 15)
+        status = optional(bool, false)
       }))
       source_selection_criteria = optional(object({
         replica_modifications     = optional(bool, false)
@@ -316,7 +316,9 @@ variable "replication_configuration" {
   description = <<-EOT
     Bucket replication configuration settings, specify the rules map keys as integers as these are used to determine the priority of the rules in case of conflict.
 
-    Pass `iam_role_arn`, or set `create_iam_role = true` to create a role with KMS grants on `kms_key_arn` and same-account `replica_kms_key_arn`s. Set `create_kms_grant = false` when the bucket has no `kms_key_arn`.
+    Pass `iam_role_arn`, or set `create_iam_role = true` to create a role with KMS grants on `kms_key_arn` and same-account `replica_kms_key_arn`s. Set `create_kms_grant = false` when the bucket has no `kms_key_arn`. The role is named `<bucket>-replication` unless `iam_role_name` is set.
+
+    Replication Time Control (`replication_time`) needs replication metrics, and uses the only time AWS supports: 15 minutes, also as metrics event threshold.
   EOT
 
   validation {
@@ -324,6 +326,15 @@ variable "replication_configuration" {
       var.replication_configuration.create_iam_role != (var.replication_configuration.iam_role_arn != null)
     )
     error_message = "Set either replication_configuration.iam_role_arn or replication_configuration.create_iam_role = true, not both."
+  }
+
+  validation {
+    condition = var.replication_configuration == null || alltrue([
+      for rule in try(var.replication_configuration.rules, {}) : (
+        !try(rule.replication_time.status, false) || try(rule.metrics.status, false)
+      )
+    ])
+    error_message = "Replication Time Control (replication_time.status) needs replication metrics (metrics.status) in the same rule."
   }
 
   validation {

@@ -26,6 +26,11 @@ module "cross_account_replication" {
           prefix = "reports/daily/"
         }
 
+        # Replication metrics without Replication Time Control, for an OperationsFailedReplication alarm.
+        metrics = {
+          status = true
+        }
+
         source_selection_criteria = {
           sse_kms_encrypted_objects = true
         }
