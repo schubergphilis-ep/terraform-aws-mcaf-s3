@@ -6,6 +6,20 @@ mock_provider "aws" {
       region = "eu-central-1"
     }
   }
+
+  # Mock data.aws_caller_identity: KMS grants are only created on keys in this account.
+  mock_data "aws_caller_identity" {
+    defaults = {
+      account_id = "111111111111"
+    }
+  }
+
+  # Mock data.aws_iam_policy_document: IAM resources reject the random string a mock returns by default.
+  mock_data "aws_iam_policy_document" {
+    defaults = {
+      json = "{\"Version\":\"2012-10-17\",\"Statement\":[]}"
+    }
+  }
 }
 
 run "setup" {
@@ -124,4 +138,551 @@ run "object_lock_without_versioning" {
   }
 
   expect_failures = [aws_s3_bucket_object_lock_configuration.default]
+}
+
+# Without replication_configuration nothing replication related is created.
+run "replication_disabled" {
+  command = plan
+
+  module {
+    source = "./"
+  }
+
+  assert {
+    condition     = length(aws_s3_bucket_replication_configuration.default) == 0
+    error_message = "Expected no replication configuration, got: ${length(aws_s3_bucket_replication_configuration.default)}"
+  }
+
+  assert {
+    condition     = length(module.s3_replication_role) == 0 && length(aws_kms_grant.s3_replication_bucket) == 0 && length(aws_kms_grant.s3_replication_replica) == 0
+    error_message = "Expected no replication role and KMS grant"
+  }
+
+  assert {
+    condition     = output.replication_role_arn == null
+    error_message = "Expected no replication role ARN, got: ${coalesce(output.replication_role_arn, "null")}"
+  }
+}
+
+# With an existing role the module creates no role or grant, and renders the rule like it did before the new rule
+# fields were added.
+run "replication_existing_role" {
+  command = plan
+
+  module {
+    source = "./"
+  }
+
+  variables {
+    kms_key_arn = "arn:aws:kms:eu-central-1:111111111111:key/1234abcd-12ab-34cd-56ef-1234567890ab"
+
+    replication_configuration = {
+      iam_role_arn = "arn:aws:iam::111111111111:role/replication-role"
+
+      rules = {
+        "1" = {
+          id          = "1"
+          dest_bucket = "arn:aws:s3:::destination-bucket"
+        }
+      }
+    }
+  }
+
+  assert {
+    condition     = length(module.s3_replication_role) == 0 && length(aws_kms_grant.s3_replication_bucket) == 0 && length(aws_kms_grant.s3_replication_replica) == 0
+    error_message = "Expected no replication role and KMS grant when iam_role_arn is passed"
+  }
+
+  assert {
+    condition     = aws_s3_bucket_replication_configuration.default["create"].role == "arn:aws:iam::111111111111:role/replication-role"
+    error_message = "Expected the replication configuration to use the passed role, got: ${aws_s3_bucket_replication_configuration.default["create"].role}"
+  }
+
+  assert {
+    condition     = output.replication_role_arn == "arn:aws:iam::111111111111:role/replication-role"
+    error_message = "Expected the passed role ARN as output, got: ${coalesce(output.replication_role_arn, "null")}"
+  }
+
+  assert {
+    condition = (
+      aws_s3_bucket_replication_configuration.default["create"].rule[0].delete_marker_replication[0].status == "Disabled" &&
+      aws_s3_bucket_replication_configuration.default["create"].rule[0].destination[0].account == null &&
+      length(aws_s3_bucket_replication_configuration.default["create"].rule[0].destination[0].access_control_translation) == 0 &&
+      length(aws_s3_bucket_replication_configuration.default["create"].rule[0].filter) == 1 &&
+      aws_s3_bucket_replication_configuration.default["create"].rule[0].filter[0].prefix == null
+    )
+    error_message = "Expected the default rule: delete markers disabled, no destination account or owner translation and an empty filter"
+  }
+}
+
+# The module creates the role and a KMS grant for the bucket key, and renders the cross-account and prefix settings.
+run "replication_managed_role" {
+  command = plan
+
+  module {
+    source = "./"
+  }
+
+  # The role name derives from the bucket name, which is otherwise unknown during plan.
+  override_resource {
+    target          = aws_s3_bucket.default
+    override_during = plan
+    values = {
+      id  = "a-bucket-name-that-is-exactly-sixty-three-characters-long-01234"
+      arn = "arn:aws:s3:::a-bucket-name-that-is-exactly-sixty-three-characters-long-01234"
+    }
+  }
+
+  variables {
+    name        = "a-bucket-name-that-is-exactly-sixty-three-characters-long-01234"
+    kms_key_arn = "arn:aws:kms:eu-central-1:111111111111:key/1234abcd-12ab-34cd-56ef-1234567890ab"
+
+    replication_configuration = {
+      create_iam_role = true
+
+      rules = {
+        "1" = {
+          id                        = "reports"
+          delete_marker_replication = true
+          dest_account_id           = "222222222222"
+          dest_bucket               = "arn:aws:s3:::destination-bucket"
+          replica_kms_key_arn       = "arn:aws:kms:eu-central-1:222222222222:key/1234abcd-12ab-34cd-56ef-1234567890ab"
+
+          filter = {
+            prefix = "reports/daily/"
+          }
+        }
+      }
+    }
+  }
+
+  assert {
+    condition     = length(module.s3_replication_role) == 1 && length(aws_kms_grant.s3_replication_bucket) == 1 && length(aws_kms_grant.s3_replication_replica) == 0
+    error_message = "Expected a replication role and only the KMS grant for the bucket key, not for the replica key in another account"
+  }
+
+  assert {
+    condition     = length(module.s3_replication_role["create"].name) <= 64
+    error_message = "Expected the replication role name to fit in 64 characters, got: ${module.s3_replication_role["create"].name}"
+  }
+
+  assert {
+    condition     = aws_kms_grant.s3_replication_bucket["create"].operations == toset(["Decrypt"])
+    error_message = "Expected the KMS grant to only allow Decrypt"
+  }
+
+  assert {
+    condition = (
+      aws_s3_bucket_replication_configuration.default["create"].rule[0].delete_marker_replication[0].status == "Enabled" &&
+      aws_s3_bucket_replication_configuration.default["create"].rule[0].destination[0].account == "222222222222" &&
+      aws_s3_bucket_replication_configuration.default["create"].rule[0].destination[0].access_control_translation[0].owner == "Destination" &&
+      aws_s3_bucket_replication_configuration.default["create"].rule[0].filter[0].prefix == "reports/daily/"
+    )
+    error_message = "Expected delete markers, the destination account, owner translation and the prefix filter in the rule"
+  }
+}
+
+# Without a bucket key there is nothing to grant, and the grant can be turned off when the key policy allows the role.
+run "replication_managed_role_without_grant" {
+  command = plan
+
+  module {
+    source = "./"
+  }
+
+  variables {
+    kms_key_arn = "arn:aws:kms:eu-central-1:111111111111:key/1234abcd-12ab-34cd-56ef-1234567890ab"
+
+    replication_configuration = {
+      create_iam_role  = true
+      create_kms_grant = false
+
+      rules = {
+        "1" = {
+          id          = "1"
+          dest_bucket = "arn:aws:s3:::destination-bucket"
+        }
+      }
+    }
+  }
+
+  assert {
+    condition     = length(module.s3_replication_role) == 1 && length(aws_kms_grant.s3_replication_bucket) == 0 && length(aws_kms_grant.s3_replication_replica) == 0
+    error_message = "Expected a replication role without KMS grant"
+  }
+}
+
+run "replication_managed_role_without_kms_key" {
+  command = plan
+
+  module {
+    source = "./"
+  }
+
+  variables {
+    replication_configuration = {
+      create_iam_role  = true
+      create_kms_grant = false
+
+      rules = {
+        "1" = {
+          id          = "1"
+          dest_bucket = "arn:aws:s3:::destination-bucket"
+        }
+      }
+    }
+  }
+
+  assert {
+    condition     = length(module.s3_replication_role) == 1 && length(aws_kms_grant.s3_replication_bucket) == 0 && length(aws_kms_grant.s3_replication_replica) == 0
+    error_message = "Expected a replication role without KMS grant"
+  }
+}
+
+# Replicas encrypted with a key in this account get their own grant, in the region of that key.
+run "replication_same_account_replica_key" {
+  command = plan
+
+  module {
+    source = "./"
+  }
+
+  variables {
+    kms_key_arn = "arn:aws:kms:eu-central-1:111111111111:key/1234abcd-12ab-34cd-56ef-1234567890ab"
+
+    replication_configuration = {
+      create_iam_role = true
+
+      rules = {
+        "1" = {
+          id                  = "1"
+          dest_bucket         = "arn:aws:s3:::destination-bucket"
+          replica_kms_key_arn = "arn:aws:kms:eu-west-1:111111111111:key/0b6d5b2e-7f3c-4f53-9a8e-3c1f8f0c1d2e"
+        }
+      }
+    }
+  }
+
+  assert {
+    condition = (
+      length(aws_kms_grant.s3_replication_bucket) == 1 &&
+      aws_kms_grant.s3_replication_replica["1"].region == "eu-west-1" &&
+      aws_kms_grant.s3_replication_replica["1"].operations == toset(["Encrypt", "GenerateDataKey"])
+    )
+    error_message = "Expected a KMS grant for Encrypt and GenerateDataKey on the replica key in eu-west-1"
+  }
+}
+
+# KMS keys created in the same configuration are unknown during plan, which must not block the grants.
+run "replication_unknown_kms_key" {
+  command = plan
+
+  module {
+    source = "./tests/kms-key-unknown"
+  }
+}
+
+# A role must come from exactly one place.
+run "replication_role_conflict" {
+  command = plan
+
+  module {
+    source = "./"
+  }
+
+  variables {
+    replication_configuration = {
+      create_iam_role = true
+      iam_role_arn    = "arn:aws:iam::111111111111:role/replication-role"
+
+      rules = {
+        "1" = {
+          id          = "1"
+          dest_bucket = "arn:aws:s3:::destination-bucket"
+        }
+      }
+    }
+  }
+
+  expect_failures = [var.replication_configuration]
+}
+
+run "replication_role_missing" {
+  command = plan
+
+  module {
+    source = "./"
+  }
+
+  variables {
+    replication_configuration = {
+      rules = {
+        "1" = {
+          id          = "1"
+          dest_bucket = "arn:aws:s3:::destination-bucket"
+        }
+      }
+    }
+  }
+
+  expect_failures = [var.replication_configuration]
+}
+
+run "replication_invalid_account_id" {
+  command = plan
+
+  module {
+    source = "./"
+  }
+
+  variables {
+    replication_configuration = {
+      create_iam_role = true
+
+      rules = {
+        "1" = {
+          id              = "1"
+          dest_account_id = "2222"
+          dest_bucket     = "arn:aws:s3:::destination-bucket"
+        }
+      }
+    }
+  }
+
+  expect_failures = [var.replication_configuration]
+}
+
+# A given role name is used as is, and metrics only get an event threshold with Replication Time Control.
+run "replication_managed_role_name_and_metrics" {
+  command = plan
+
+  module {
+    source = "./"
+  }
+
+  variables {
+    replication_configuration = {
+      create_iam_role  = true
+      create_kms_grant = false
+      iam_role_name    = "acme-vpc-flow-logs-s3-replication"
+      iam_role_path    = "/mdr/"
+
+      rules = {
+        "1" = {
+          id          = "without-threshold"
+          dest_bucket = "arn:aws:s3:::destination-bucket"
+
+          metrics = {
+            status = true
+          }
+        }
+        "2" = {
+          id          = "with-threshold"
+          dest_bucket = "arn:aws:s3:::other-destination-bucket"
+
+          metrics = {
+            status = true
+          }
+
+          replication_time = {
+            status = true
+          }
+        }
+      }
+    }
+  }
+
+  assert {
+    condition     = module.s3_replication_role["create"].name == "acme-vpc-flow-logs-s3-replication"
+    error_message = "Expected the given role name without postfix, got: ${module.s3_replication_role["create"].name}"
+  }
+
+  assert {
+    condition = (
+      length(aws_s3_bucket_replication_configuration.default["create"].rule[0].destination[0].metrics[0].event_threshold) == 0 &&
+      aws_s3_bucket_replication_configuration.default["create"].rule[1].destination[0].metrics[0].event_threshold[0].minutes == 15 &&
+      aws_s3_bucket_replication_configuration.default["create"].rule[1].destination[0].replication_time[0].time[0].minutes == 15
+    )
+    error_message = "Expected no event threshold without Replication Time Control, and 15 minutes with it"
+  }
+}
+
+
+run "replication_time_without_metrics" {
+  command = plan
+
+  module {
+    source = "./"
+  }
+
+  variables {
+    replication_configuration = {
+      iam_role_arn = "arn:aws:iam::111111111111:role/replication-role"
+
+      rules = {
+        "1" = {
+          id          = "1"
+          dest_bucket = "arn:aws:s3:::destination-bucket"
+
+          replication_time = {
+            status = true
+          }
+        }
+      }
+    }
+  }
+
+  expect_failures = [var.replication_configuration]
+}
+
+# Whether a replica key is in this account follows from its ARN, not from dest_account_id: a replica key in this account
+# gets a grant even with dest_account_id set to this account, and a key in another account gets none without it.
+run "replication_replica_key_account" {
+  command = plan
+
+  module {
+    source = "./"
+  }
+
+  variables {
+    replication_configuration = {
+      create_iam_role  = true
+      create_kms_grant = false
+
+      rules = {
+        "1" = {
+          id                  = "own-account"
+          dest_account_id     = "111111111111"
+          dest_bucket         = "arn:aws:s3:::destination-bucket"
+          replica_kms_key_arn = "arn:aws:kms:eu-central-1:111111111111:key/1234abcd-12ab-34cd-56ef-1234567890ab"
+        }
+        "2" = {
+          id                  = "other-account"
+          dest_bucket         = "arn:aws:s3:::other-destination-bucket"
+          replica_kms_key_arn = "arn:aws:kms:eu-central-1:222222222222:key/1234abcd-12ab-34cd-56ef-1234567890ab"
+        }
+      }
+    }
+  }
+
+  assert {
+    condition     = keys(aws_kms_grant.s3_replication_replica) == ["1"]
+    error_message = "Expected only a grant on the replica key in this account, got: ${jsonencode(keys(aws_kms_grant.s3_replication_replica))}"
+  }
+}
+
+# An explicit grant on a key in another account fails at plan instead of at apply.
+run "replication_replica_key_other_account_grant" {
+  command = plan
+
+  module {
+    source = "./"
+  }
+
+  variables {
+    replication_configuration = {
+      create_iam_role  = true
+      create_kms_grant = false
+
+      rules = {
+        "1" = {
+          id                       = "1"
+          create_replica_kms_grant = true
+          dest_bucket              = "arn:aws:s3:::destination-bucket"
+          replica_kms_key_arn      = "arn:aws:kms:eu-central-1:222222222222:key/1234abcd-12ab-34cd-56ef-1234567890ab"
+        }
+      }
+    }
+  }
+
+  expect_failures = [var.replication_configuration]
+}
+
+# The default bucket key grant fails with a clear message when the bucket has no KMS key.
+run "replication_grant_without_kms_key" {
+  command = plan
+
+  module {
+    source = "./"
+  }
+
+  variables {
+    replication_configuration = {
+      create_iam_role = true
+
+      rules = {
+        "1" = {
+          id          = "1"
+          dest_bucket = "arn:aws:s3:::destination-bucket"
+        }
+      }
+    }
+  }
+
+  expect_failures = [var.replication_configuration]
+}
+
+# KMS grant names only allow [a-zA-Z0-9:/_-], unlike bucket names.
+run "replication_grant_name_with_dots" {
+  command = plan
+
+  module {
+    source = "./"
+  }
+
+  # The grant name derives from the bucket name, which is otherwise unknown during plan.
+  override_resource {
+    target          = aws_s3_bucket.default
+    override_during = plan
+    values = {
+      id  = "reports.example.com"
+      arn = "arn:aws:s3:::reports.example.com"
+    }
+  }
+
+  variables {
+    name        = "reports.example.com"
+    kms_key_arn = "arn:aws:kms:eu-central-1:111111111111:key/1234abcd-12ab-34cd-56ef-1234567890ab"
+
+    replication_configuration = {
+      create_iam_role = true
+
+      rules = {
+        "1" = {
+          id          = "1"
+          dest_bucket = "arn:aws:s3:::destination-bucket"
+        }
+      }
+    }
+  }
+
+  assert {
+    condition     = aws_kms_grant.s3_replication_bucket["create"].name == "reports-example-com-replication-bucket"
+    error_message = "Expected dots replaced in the grant name, got: ${aws_kms_grant.s3_replication_bucket["create"].name}"
+  }
+}
+
+run "replication_replica_grant_without_key" {
+  command = plan
+
+  module {
+    source = "./"
+  }
+
+  variables {
+    replication_configuration = {
+      create_iam_role  = true
+      create_kms_grant = false
+
+      rules = {
+        "1" = {
+          id                       = "1"
+          create_replica_kms_grant = true
+          dest_bucket              = "arn:aws:s3:::destination-bucket"
+        }
+      }
+    }
+  }
+
+  expect_failures = [var.replication_configuration]
 }

@@ -284,19 +284,28 @@ variable "region" {
 
 variable "replication_configuration" {
   type = object({
-    iam_role_arn = string
+    create_iam_role          = optional(bool, false)
+    create_kms_grant         = optional(bool, true)
+    iam_role_arn             = optional(string, null)
+    iam_role_name            = optional(string, null)
+    iam_role_path            = optional(string, "/")
+    permissions_boundary_arn = optional(string, null)
     rules = map(object({
-      id                  = string
-      dest_bucket         = string
-      dest_storage_class  = optional(string, null)
-      replica_kms_key_arn = optional(string, null)
+      id                        = string
+      create_replica_kms_grant  = optional(bool, null)
+      delete_marker_replication = optional(bool, false)
+      dest_account_id           = optional(string, null)
+      dest_bucket               = string
+      dest_storage_class        = optional(string, null)
+      replica_kms_key_arn       = optional(string, null)
+      filter = optional(object({
+        prefix = optional(string)
+      }), null)
       metrics = optional(object({
-        status                  = optional(bool, false)
-        event_threshold_minutes = optional(number, 15)
+        status = optional(bool, false)
       }))
       replication_time = optional(object({
-        status       = optional(bool, false)
-        time_minutes = optional(number, 15)
+        status = optional(bool, false)
       }))
       source_selection_criteria = optional(object({
         replica_modifications     = optional(bool, false)
@@ -305,7 +314,65 @@ variable "replication_configuration" {
     }))
   })
   default     = null
-  description = "Bucket replication configuration settings, specify the rules map keys as integers as these are used to determine the priority of the rules in case of conflict."
+  description = <<-EOT
+    Bucket replication configuration settings, specify the rules map keys as integers as these are used to determine the priority of the rules in case of conflict.
+
+    Pass `iam_role_arn`, or set `create_iam_role = true` to create a role with KMS grants on `kms_key_arn` and on `replica_kms_key_arn`s in this account. Set `create_kms_grant = false` when the bucket has no `kms_key_arn`.
+    A rule gets a replica key grant when its `replica_kms_key_arn` is in this account, which must be known at plan time. Set `create_replica_kms_grant = true` for a key that is created in the same configuration, or `false` to skip the grant. The role is named `<bucket>-replication` unless `iam_role_name` is set.
+
+    Replication Time Control (`replication_time`) needs replication metrics, and uses the only time AWS supports: 15 minutes, also as metrics event threshold.
+  EOT
+
+  validation {
+    condition = var.replication_configuration == null || (
+      var.replication_configuration.create_iam_role != (var.replication_configuration.iam_role_arn != null)
+    )
+    error_message = "Set either replication_configuration.iam_role_arn or replication_configuration.create_iam_role = true, not both."
+  }
+
+  validation {
+    condition = var.replication_configuration == null || (
+      !var.replication_configuration.create_iam_role || !var.replication_configuration.create_kms_grant || var.kms_key_arn != null
+    )
+    error_message = "replication_configuration.create_kms_grant needs kms_key_arn, set it to false for a bucket without KMS key."
+  }
+
+  validation {
+    condition = var.replication_configuration == null || alltrue([
+      for rule in try(var.replication_configuration.rules, {}) : rule.create_replica_kms_grant != true || rule.replica_kms_key_arn != null
+    ])
+    error_message = "A replication rule with create_replica_kms_grant = true needs replica_kms_key_arn."
+  }
+
+  validation {
+    condition = var.replication_configuration == null || !var.replication_configuration.create_iam_role || alltrue([
+      for key_arn in concat(
+        var.replication_configuration.create_kms_grant && var.kms_key_arn != null ? [var.kms_key_arn] : [],
+        [for rule in var.replication_configuration.rules : rule.replica_kms_key_arn if rule.create_replica_kms_grant == true && rule.replica_kms_key_arn != null]
+      ) : split(":", key_arn)[4] == data.aws_caller_identity.default.account_id
+    ])
+    error_message = "KMS grants can only be created on keys in this account. Allow the replication role in the key policy of a key in another account instead, and set create_kms_grant (bucket key) or create_replica_kms_grant (replica key) to false."
+  }
+
+  validation {
+    condition = var.replication_configuration == null || alltrue([
+      for rule in try(var.replication_configuration.rules, {}) : (
+        !try(rule.replication_time.status, false) || try(rule.metrics.status, false)
+      )
+    ])
+    error_message = "Replication Time Control (replication_time.status) needs replication metrics (metrics.status) in the same rule."
+  }
+
+  validation {
+    condition = var.replication_configuration == null || alltrue([
+      for rule in try(var.replication_configuration.rules, {}) : (
+        can(regex("^arn:aws[a-z-]*:s3:::[^/]+$", rule.dest_bucket)) &&
+        (rule.dest_account_id == null || can(regex("^[0-9]{12}$", rule.dest_account_id))) &&
+        (rule.replica_kms_key_arn == null || can(regex("^arn:aws[a-z-]*:kms:", rule.replica_kms_key_arn)))
+      )
+    ])
+    error_message = "Every replication rule needs dest_bucket as an S3 bucket ARN, dest_account_id as a 12-digit account ID and replica_kms_key_arn as a KMS ARN, when set."
+  }
 }
 
 variable "request_payer" {
