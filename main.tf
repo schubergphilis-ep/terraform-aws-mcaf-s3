@@ -19,14 +19,16 @@ locals {
 
   replication_replica_kms_key_arns = distinct(compact([for rule in try(var.replication_configuration.rules, {}) : rule.replica_kms_key_arn]))
 
-  # Grants on the bucket key and same-account replica keys. Doesn't check kms_key_arn, which may be unknown at plan time.
-  replication_kms_grants = length(local.replication_role_enabled) > 0 && try(var.replication_configuration.create_kms_grant, false) ? merge(
-    { bucket = { key_id = var.kms_key_arn, operations = ["Decrypt"] } },
-    {
-      for k, rule in var.replication_configuration.rules : "replica-${k}" => { key_id = rule.replica_kms_key_arn, operations = ["Encrypt", "GenerateDataKey"] }
-      if rule.dest_account_id == null && rule.replica_kms_key_arn != null
-    }
-  ) : {}
+  # The created role gets a KMS grant on the bucket key, and on the replica key of each rule whose key is in this
+  # account. Set create_replica_kms_grant when the replica key ARN is unknown at plan time.
+  replication_bucket_kms_grant_enabled = length(local.replication_role_enabled) > 0 && try(var.replication_configuration.create_kms_grant, false) ? { create = true } : {}
+  replication_replica_kms_grants = length(local.replication_role_enabled) == 0 ? {} : {
+    for k, rule in var.replication_configuration.rules : k => rule.replica_kms_key_arn
+    if coalesce(rule.create_replica_kms_grant, try(split(":", rule.replica_kms_key_arn)[4] == local.account_id, false))
+  }
+
+  # KMS grant names only allow [a-zA-Z0-9:/_-], bucket and role names can also contain dots and other characters.
+  replication_kms_grant_name_prefix = replace(local.replication_iam_role_name, "/[^a-zA-Z0-9:/_-]/", "-")
 
   # IAM role names are at most 64 characters.
   replication_iam_role_name = coalesce(try(var.replication_configuration.iam_role_name, null), "${substr(aws_s3_bucket.default.id, 0, 52)}-replication")
@@ -810,6 +812,11 @@ data "aws_iam_policy_document" "s3_replication_policy" {
         "kms:GenerateDataKey"
       ]
       resources = local.replication_replica_kms_key_arns
+      condition {
+        test     = "StringEquals"
+        variable = "kms:ViaService"
+        values   = distinct([for arn in local.replication_replica_kms_key_arns : "s3.${split(":", arn)[3]}.amazonaws.com"])
+      }
     }
   }
 }
@@ -832,14 +839,24 @@ module "s3_replication_role" {
 
 # Key policies of mcaf-kms keys only trust the account root, so the role policy alone can't give the role access to
 # the keys. A grant does, without a dependency cycle between the role and the key policy.
-resource "aws_kms_grant" "s3_replication" {
-  for_each = local.replication_kms_grants
+resource "aws_kms_grant" "s3_replication_bucket" {
+  for_each = local.replication_bucket_kms_grant_enabled
 
-  region            = split(":", each.value.key_id)[3]
-  name              = "${local.replication_iam_role_name}-${each.key}"
-  key_id            = each.value.key_id
+  region            = local.account_region
+  name              = "${local.replication_kms_grant_name_prefix}-bucket"
+  key_id            = var.kms_key_arn
   grantee_principal = module.s3_replication_role["create"].arn
-  operations        = each.value.operations
+  operations        = ["Decrypt"]
+}
+
+resource "aws_kms_grant" "s3_replication_replica" {
+  for_each = local.replication_replica_kms_grants
+
+  region            = split(":", each.value)[3]
+  name              = "${local.replication_kms_grant_name_prefix}-replica-${each.key}"
+  key_id            = each.value
+  grantee_principal = module.s3_replication_role["create"].arn
+  operations        = ["Encrypt", "GenerateDataKey"]
 }
 
 resource "aws_s3_bucket_replication_configuration" "default" {
@@ -932,7 +949,7 @@ resource "aws_s3_bucket_replication_configuration" "default" {
   }
 
   # The role needs its KMS grants before S3 replicates the first object.
-  depends_on = [aws_kms_grant.s3_replication, aws_s3_bucket_versioning.default]
+  depends_on = [aws_kms_grant.s3_replication_bucket, aws_kms_grant.s3_replication_replica, aws_s3_bucket_versioning.default]
 }
 
 ###
