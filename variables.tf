@@ -344,7 +344,6 @@ variable "replication_configuration" {
     error_message = "A replication rule with create_replica_kms_grant = true needs replica_kms_key_arn."
   }
 
-  # KMS grants can only be created on keys in this account.
   validation {
     condition = var.replication_configuration == null || !var.replication_configuration.create_iam_role || alltrue([
       for key_arn in concat(
